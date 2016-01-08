@@ -1,28 +1,90 @@
-import Graphics.Element exposing (Element, show)
+module CouchDB where
+
+import Graphics.Element exposing (show)
 import Http
-import Task exposing (..)
-import Json.Decode as Json exposing ((:=))
-import Maybe
+import Json.Decode as JD exposing ((:=))
+import Json.Encode as JE
+import Task exposing (Task, andThen, toResult, toMaybe)
+import Base64
+
 import Debug
 
-couchDecode : Json.Decoder (Int)
-couchDecode = "last_seq" := Json.int
-    
-fetch : Task Http.Error (Int)
-fetch = Http.get couchDecode ("http://127.0.0.1:5984/rmlib/_changes?feed=longpoll&timeout=60000&heartbeat=true")
-{- "&include_docs=true" -}
+type alias Config = 
+  {
+    dbhost : String
+    , db     : String
+    , user   : String
+    , pass   : String
+  }
 
-mailbox : Signal.Mailbox Int
-mailbox = Signal.mailbox 0
+config : Config
+config = 
+  {
+    dbhost = "http://localhost:5984"
+    , db   = "qts"
+    , user = "root"
+    , pass = "root123"
+  }
 
-render : Int -> Task x ()
-render seq = Signal.send mailbox.address seq
+type alias State =
+ {
+   session   : Maybe String
+   -- The seq number/id of the last seen _changes event
+   last_seen : String
+ }
 
-port fetchChanges : Task Http.Error ()
-port fetchChanges = loop
+type Cmd = 
+  Login
+  | Logout
+  | Changes
 
-loop = fetch `andThen` render `andThen` \_ -> Debug.log "hi!" loop 
 
-main : Signal Element
-main = Signal.map show mailbox.signal 
+login : Task Http.Error Bool
+login = 
+  let req =
+    {
+      verb = "POST"
+      , headers = [("Content-Type", "application/json")]
+      , url = (config.dbhost ++ "/_session")
+      , body = Http.string
+                (JE.encode 0 
+                  (JE.object 
+                    [("name",     (JE.string config.user)), 
+                     ("password", (JE.string config.pass))
+                    ]))
+    }
+  in 
+    Http.fromJson ("ok" := JD.bool) (Http.send Http.defaultSettings req)
 
+changes : Task Http.Error (List String)
+changes =
+  let req =
+    {
+        verb = "GET",
+        headers = [],
+        url = config.dbhost ++ "/" ++ config.db ++ "/_changes?feed=longpoll",
+        body = Http.empty
+    }
+  in 
+    Http.fromJson (JD.list JD.string) (Http.send Http.defaultSettings req)
+
+
+doLogin : Task x (Result Http.Error Bool)
+doLogin =
+  Task.toResult login
+
+doChanges : Task x (Result Http.Error (List String))
+doChanges = 
+  Task.toResult changes
+
+port runner : Task x ()
+port runner =
+  doLogin
+    `andThen` \status -> doChanges
+    `andThen` \result -> Debug.log result
+
+
+main =
+  show "Open the Developer Console of your browser."
+
+-- vim: ts=2:sw=2:et
